@@ -38,7 +38,7 @@ from .models import (
 )
 from realtimeMonitoring import settings
 import dateutil.relativedelta
-from django.db.models import Avg, DateField, Func, Max, Min, Sum
+from django.db.models import Avg, DateField, FloatField, Func, Max, Min, Sum, ExpressionWrapper, F
 
 
 class DashboardView(TemplateView):
@@ -777,42 +777,43 @@ class ToDate(Func):
     template = "(%(function)s(%(expressions)s / 1000000.0))::date"
     output_field = DateField()
 
-def get_daily_averages_by_station(request):
-    # 1. Obtener parámetros
+def get_daily_averages_by_station_timescale(request):
     measurement_name = request.GET.get('measurement')
     start_str = request.GET.get('start_date')
     end_str = request.GET.get('end_date')
 
-    # Convertir a timestamps (microsegundos)
+    # Conversión de fechas a timestamps (microsegundos)
     start_dt = datetime.strptime(start_str, '%Y-%m-%d')
-    end_dt = datetime.strptime(end_str, '%Y-%m-%d')
-    
-    # Ajustar al final del día
-    end_dt = end_dt.replace(hour=23, minute=59, second=59)
-
+    end_dt = datetime.strptime(end_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
     start_ts = int(start_dt.timestamp() * 1000000)
     end_ts = int(end_dt.timestamp() * 1000000)
 
-    # 2. Realizar la consulta
-    daily_data = Data.objects.filter(
+    # 1. Filtramos los datos
+    queryset = Data.objects.filter(
         measurement__name=measurement_name,
         time__gte=start_ts,
         time__lte=end_ts
     ).annotate(
-        date=ToDate('time')      # Convertir microsegundos a fecha
-    ).values(
-        'date', 'station__id'  # Agrupar por Fecha y Estación
+        date=ToDate('time')
+    )
+
+    # 2. Agrupamos y calculamos el promedio ponderado
+    daily_data = queryset.values('date', 'station__id').annotate(
+        # Calculamos (promedio del blob * longitud del blob) para recuperar la suma original de ese blob
+        total_sum=Sum(ExpressionWrapper(F('avg_value') * F('length'), output_field=FloatField())),
+        # Sumamos todas las longitudes (cantidad total de muestras en el día)
+        total_count=Sum('length')
     ).annotate(
-        average=Avg('avg_value') # Promedio de los promedios pre-calculados
+        # Dividimos la suma total entre la cantidad total
+        real_average=ExpressionWrapper(F('total_sum') / F('total_count'), output_field=FloatField())
     ).order_by('date', 'station__id')
 
-    # 3. Formatear la respuesta
     response_data = []
     for entry in daily_data:
         response_data.append({
             "date": entry['date'].strftime('%Y-%m-%d'),
             "station": entry['station__id'],
-            "average": round(entry['average'], 2)
+            "average": round(entry['real_average'], 2) if entry['real_average'] else 0
         })
 
     return JsonResponse(response_data, safe=False)
