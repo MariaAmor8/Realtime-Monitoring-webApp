@@ -770,3 +770,83 @@ Filtro para formatear datos en los templates
 @register.filter
 def add_str(str1, str2):
     return str1 + str2
+
+def get_peak_ranking(request):
+    """
+    Retorna la estación con el valor más alto (pico máximo) para una variable 
+    en un rango de fechas dado, adaptado para TimescaleDB (patrón Blob).
+    """
+    measureParam = request.GET.get('measure', None)
+    
+    # Manejo de fechas convirtiendo a microsegundos (formato usado en esta rama)
+    try:
+        start_ts = int(float(request.GET.get('from', 0)) * 1000) # timestamp * 1000000
+        # Ojo: la entrada 'from' suele venir en ms desde el frontend, pero la base 
+        # timescale en este proyecto usa microsegundos (us) para el campo 'time'.
+        # Si 'from' viene en milisegundos (JS), *1000 lo pasa a microsegundos.
+    except (ValueError, TypeError):
+        start_ts = 0
+
+    try:
+        # Por defecto hasta ahora
+        end_ts = int(datetime.now().timestamp() * 1000000)
+        if request.GET.get('to'):
+             end_ts = int(float(request.GET.get('to')) * 1000)
+    except (ValueError, TypeError):
+         end_ts = int(datetime.now().timestamp() * 1000000)
+
+    response_data = {}
+
+    if measureParam:
+        # 1. Encontrar el BLOQUE (registro Data) que tiene el max_value más alto
+        # Esto es muy rápido porque Timescale/Postgres usa el índice o metadato de max_value
+        peak_block = Data.objects.filter(
+            measurement__name=measureParam,
+            time__gte=start_ts, 
+            time__lte=end_ts
+        ).order_by('-max_value').first()
+
+        if peak_block:
+            # 2. Encontrar el valor exacto y su tiempo dentro del bloque
+            # peak_block.values es una lista de valores
+            # peak_block.times es una lista de offsets de tiempo (segundos desde base_time)
+            
+            max_val = -float('inf')
+            max_index = -1
+            
+            # Recorremos la lista descomprimida para hallar el índice del máximo
+            # (Python lo hace en memoria, pero solo para 1 registro, es rápido)
+            values = peak_block.values
+            for i, val in enumerate(values):
+                if val > max_val:
+                    max_val = val
+                    max_index = i
+            
+            # Calcular el timestamp exacto
+            # base_time es datetime, times[i] son segundos de desfase
+            if max_index != -1:
+                offset_seconds = peak_block.times[max_index]
+                exact_time = peak_block.base_time.timestamp() + offset_seconds
+                exact_time_iso = datetime.fromtimestamp(exact_time).isoformat()
+                
+                response_data = {
+                    'station': {
+                        'id': peak_block.station.id,
+                        'city': peak_block.station.location.city.name,
+                        'state': peak_block.station.location.state.name,
+                        'country': peak_block.station.location.country.name
+                    },
+                    'measurement': peak_block.measurement.name,
+                    'max_value': max_val,
+                    'timestamp': exact_time_iso
+                }
+            else:
+                 # Caso raro: bloque vacío o corrupto
+                 response_data = {'message': 'Data block found but empty values'}
+
+        else:
+            response_data = {'message': 'No data found for the specified criteria'}
+    else:
+        response_data = {'error': 'Measurement parameter "measure" is required'}
+
+    return JsonResponse(response_data)
