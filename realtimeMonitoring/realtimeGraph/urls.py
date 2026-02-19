@@ -13,5 +13,5 @@ urlpatterns = [
     path("login/", LoginView.as_view(), name="login"),
     path("logout/", LogoutView.as_view(), name="logout"),
     path("historical/data", download_csv_data, name="historical-data"),
-    path('ranking/', get_peak_ranking, name='ranking'),
+    path('daily-average/', get_daily_averages_by_station, name='daily_average'),
 ]

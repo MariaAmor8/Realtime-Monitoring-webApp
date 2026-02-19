@@ -38,7 +38,7 @@ from .models import (
 )
 from realtimeMonitoring import settings
 import dateutil.relativedelta
-from django.db.models import Avg, Max, Min, Sum
+from django.db.models import Avg, DateField, Func, Max, Min, Sum
 
 
 class DashboardView(TemplateView):
@@ -771,71 +771,48 @@ Filtro para formatear datos en los templates
 def add_str(str1, str2):
     return str1 + str2
 
-def get_peak_ranking(request):
-    """
-    Retorna el Top 5 de mediciones más altas (Timescale).
-    Desempaqueta bloques para encontrar picos múltiples dentro del mismo intervalo.
-    """
-    measureParam = request.GET.get('measure', None)
-    response_data = {}
+# Función para convertir bigint (microsegundos) a fecha en PostgreSQL
+class ToDate(Func):
+    function = 'to_timestamp'
+    template = "(%(function)s(%(expressions)s / 1000000.0))::date"
+    output_field = DateField()
 
-    try:
-        # Conversión de timestamps (milisegundos -> microsegundos para Timescale)
-        start_ts = int(float(request.GET.get('from', 0)) * 1000) 
-        
-        if request.GET.get('to'):
-             end_ts = int(float(request.GET.get('to')) * 1000)
-        else:
-             end_ts = int(datetime.now().timestamp() * 1000000)
+def get_daily_averages_by_station(request):
+    # 1. Obtener parámetros
+    measurement_name = request.GET.get('measurement')
+    start_str = request.GET.get('start_date')
+    end_str = request.GET.get('end_date')
 
-        if measureParam:
-            # 1. Traer los mejores N bloques.
-            # Traemos más de 5 (ej: 10) para asegurar que si los 5 picos más altos
-            # están distribuidos en varios bloques, los tengamos todos.
-            candidate_blocks = Data.objects.filter(
-                measurement__name=measureParam,
-                time__gte=start_ts, 
-                time__lte=end_ts
-            ).order_by('-max_value')[:10] 
+    # Convertir a timestamps (microsegundos)
+    start_dt = datetime.strptime(start_str, '%Y-%m-%d')
+    end_dt = datetime.strptime(end_str, '%Y-%m-%d')
+    
+    # Ajustar al final del día
+    end_dt = end_dt.replace(hour=23, minute=59, second=59)
 
-            all_measurements = []
+    start_ts = int(start_dt.timestamp() * 1000000)
+    end_ts = int(end_dt.timestamp() * 1000000)
 
-            # 2. Desempaquetar TODOS los valores de los bloques candidatos
-            for block in candidate_blocks:
-                values = block.values # Lista de floats
-                times = block.times   # Lista de offsets
-                
-                # Reconstruir cada medición individual
-                for i in range(len(values)):
-                    val = values[i]
-                    offset = times[i]
-                    
-                    # Filtro de seguridad: a veces un bloque puede tener valores fuera del rango exacto solicitado
-                    # si el bloque cruza el límite del filtro, aunque 'time__gte' lo maneja bien a nivel de bloque.
-                    
-                    exact_time_ts = block.base_time.timestamp() + offset
-                    # Opcional: Verificar si exact_time_ts cae en el rango solicitado si se requiere precisión estricta
-                    
-                    all_measurements.append({
-                        'station_id': block.station.id,
-                        'city': block.station.location.city.name,
-                        'measurement': block.measurement.name,
-                        'value': val,
-                        'timestamp': datetime.fromtimestamp(exact_time_ts).isoformat()
-                    })
+    # 2. Realizar la consulta
+    daily_data = Data.objects.filter(
+        measurement__name=measurement_name,
+        time__gte=start_ts,
+        time__lte=end_ts
+    ).annotate(
+        date=ToDate('time')      # Convertir microsegundos a fecha
+    ).values(
+        'date', 'station__name'  # Agrupar por Fecha y Estación
+    ).annotate(
+        average=Avg('avg_value') # Promedio de los promedios pre-calculados
+    ).order_by('date', 'station__name')
 
-            # 3. Ordenar la lista completa de mediciones individuales en memoria
-            # Ordenamos por valor descendente
-            all_measurements.sort(key=lambda x: x['value'], reverse=True)
+    # 3. Formatear la respuesta
+    response_data = []
+    for entry in daily_data:
+        response_data.append({
+            "date": entry['date'].strftime('%Y-%m-%d'),
+            "station": entry['station__name'],
+            "average": round(entry['average'], 2)
+        })
 
-            # 4. Tomar los 5 primeros
-            top_5 = all_measurements[:5]
-            
-            response_data = {'ranking': top_5}
-        else:
-            response_data = {'error': 'Falta el parámetro "measure"'}
-
-    except Exception as e:
-        response_data = {'error': str(e)}
-
-    return JsonResponse(response_data)
+    return JsonResponse(response_data, safe=False)
