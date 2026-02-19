@@ -693,17 +693,17 @@ def get_daily_averages_by_station(request):
     ).annotate(
         date=TruncDate('time')  # Paso A: Crear la columna virtual 'date'
     ).values(
-        'date', 'station__name' # Paso B: Agrupar por fecha Y por nombre de estación
+        'date', 'station__id' # Paso B: Agrupar por fecha Y por ID de estación
     ).annotate(
         average=Avg('value')    # Paso C: Calcular promedio en esos grupos
-    ).order_by('date', 'station__name')
+    ).order_by('date', 'station__id')
 
     # 3. Formatear la respuesta
     response_data = []
     for entry in daily_data:
         response_data.append({
             "date": entry['date'].strftime('%Y-%m-%d'),
-            "station": entry['station__name'],
+            "station": entry['station__id'],
             "average": round(entry['average'], 2)
         })
     
