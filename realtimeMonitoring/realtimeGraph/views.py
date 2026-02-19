@@ -673,3 +673,57 @@ Filtro para formatear datos en los templates
 @ register.filter
 def add_str(str1, str2):
     return str1 + str2
+
+
+def get_peak_ranking(request):
+    """
+    Retorna la estación con el valor más alto (pico máximo) para una variable 
+    en un rango de fechas dado.
+    """
+    # 1. Obtener parámetros de la petición
+    measureParam = request.GET.get('measure', None)
+    
+    # Manejo de fechas similar a las otras vistas (timestamps en ms)
+    try:
+        start_ts = float(request.GET.get('from', 0)) / 1000
+        start = datetime.fromtimestamp(start_ts)
+    except (ValueError, TypeError):
+        start = datetime.fromtimestamp(0) # Fecha muy antigua por defecto
+
+    try:
+        end_ts = float(request.GET.get('to', datetime.now().timestamp() * 1000)) / 1000
+        end = datetime.fromtimestamp(end_ts)
+    except (ValueError, TypeError):
+        end = datetime.now()
+
+    response_data = {}
+
+    if measureParam:
+        # 2. Consulta a la base de datos (PostgreSQL)
+        # Filtramos por nombre de medida y rango de fechas
+        # Ordenamos descendente por valor ('-value') y tomamos el primero
+        peak_data = Data.objects.filter(
+            measurement__name=measureParam,
+            time__gte=start, 
+            time__lte=end
+        ).order_by('-value').first()
+
+        # 3. Construir respuesta JSON
+        if peak_data:
+            response_data = {
+                'station': {
+                    'id': peak_data.station.id,
+                    'city': peak_data.station.location.city.name,
+                    'state': peak_data.station.location.state.name,
+                    'country': peak_data.station.location.country.name
+                },
+                'measurement': peak_data.measurement.name,
+                'max_value': peak_data.value,
+                'timestamp': peak_data.time.isoformat()
+            }
+        else:
+            response_data = {'message': 'No data found for the specified criteria'}
+    else:
+        response_data = {'error': 'Measurement parameter "measure" is required'}
+
+    return JsonResponse(response_data)
