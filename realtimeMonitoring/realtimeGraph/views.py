@@ -24,7 +24,7 @@ from .models import City, Country, Data, Location, Measurement, Role, State, Sta
 from realtimeMonitoring import settings
 import dateutil.relativedelta
 from django.db.models import Avg, Max, Min, Sum
-
+from django.db.models.functions import TruncDate
 
 class DashboardView(TemplateView):
     template_name = 'index.html'
