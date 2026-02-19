@@ -675,50 +675,36 @@ def add_str(str1, str2):
     return str1 + str2
 
 
-def get_peak_ranking(request):
-    """
-    Retorna el Top 5 de mediciones más altas para una variable en un rango de fechas.
-    """
-    measureParam = request.GET.get('measure', None)
+def get_daily_averages_by_station(request):
+    # 1. Obtener parámetros
+    measurement_name = request.GET.get('measurement')
+    start_str = request.GET.get('start_date')
+    end_str = request.GET.get('end_date')
+
+    # Convertir strings a fechas para el filtro
+    start_date = datetime.strptime(start_str, '%Y-%m-%d')
+    end_date = datetime.strptime(end_str, '%Y-%m-%d')
+
+    # 2. Realizar la consulta
+    daily_data = Data.objects.filter(
+        measurement__name=measurement_name,
+        time__date__gte=start_date,
+        time__date__lte=end_date
+    ).annotate(
+        date=TruncDate('time')  # Paso A: Crear la columna virtual 'date'
+    ).values(
+        'date', 'station__name' # Paso B: Agrupar por fecha Y por nombre de estación
+    ).annotate(
+        average=Avg('value')    # Paso C: Calcular promedio en esos grupos
+    ).order_by('date', 'station__name')
+
+    # 3. Formatear la respuesta
+    response_data = []
+    for entry in daily_data:
+        response_data.append({
+            "date": entry['date'].strftime('%Y-%m-%d'),
+            "station": entry['station__name'],
+            "average": round(entry['average'], 2)
+        })
     
-    try:
-        start_ts = float(request.GET.get('from', 0)) / 1000
-        start = datetime.fromtimestamp(start_ts)
-    except (ValueError, TypeError):
-        start = datetime.fromtimestamp(0)
-
-    try:
-        end_ts = float(request.GET.get('to', datetime.now().timestamp() * 1000)) / 1000
-        end = datetime.fromtimestamp(end_ts)
-    except (ValueError, TypeError):
-        end = datetime.now()
-
-    response_data = {}
-
-    if measureParam:
-        # Consulta: Filtra, Ordena descendentemente y toma los primeros 5
-        top_peaks = Data.objects.filter(
-            measurement__name=measureParam,
-            time__gte=start, 
-            time__lte=end
-        ).order_by('-value')[:5]
-
-        data_list = []
-        for peak in top_peaks:
-            data_list.append({
-                'station': {
-                    'id': peak.station.id,
-                    'city': peak.station.location.city.name,
-                    'state': peak.station.location.state.name,
-                    'country': peak.station.location.country.name
-                },
-                'measurement': peak.measurement.name,
-                'max_value': peak.value,
-                'timestamp': peak.time.isoformat()
-            })
-            
-        response_data = {'ranking': data_list}
-    else:
-        response_data = {'error': 'Measurement parameter "measure" is required'}
-
-    return JsonResponse(response_data)
+    return JsonResponse(response_data, safe=False)
