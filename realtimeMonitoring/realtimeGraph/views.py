@@ -801,17 +801,17 @@ def get_daily_averages_by_station(request):
     ).annotate(
         date=ToDate('time')      # Convertir microsegundos a fecha
     ).values(
-        'date', 'station__name'  # Agrupar por Fecha y Estación
+        'date', 'station__id'  # Agrupar por Fecha y Estación
     ).annotate(
         average=Avg('avg_value') # Promedio de los promedios pre-calculados
-    ).order_by('date', 'station__name')
+    ).order_by('date', 'station__id')
 
     # 3. Formatear la respuesta
     response_data = []
     for entry in daily_data:
         response_data.append({
             "date": entry['date'].strftime('%Y-%m-%d'),
-            "station": entry['station__name'],
+            "station": entry['station__id'],
             "average": round(entry['average'], 2)
         })
 
