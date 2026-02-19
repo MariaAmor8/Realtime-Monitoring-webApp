@@ -777,7 +777,7 @@ class ToDate(Func):
     template = "(%(function)s(%(expressions)s / 1000000.0))::date"
     output_field = DateField()
 
-def get_daily_averages_by_station_timescale(request):
+def get_daily_averages_by_station(request):
     measurement_name = request.GET.get('measurement')
     start_str = request.GET.get('start_date')
     end_str = request.GET.get('end_date')
