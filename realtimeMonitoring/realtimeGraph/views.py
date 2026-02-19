@@ -773,67 +773,69 @@ def add_str(str1, str2):
 
 def get_peak_ranking(request):
     """
-    Retorna el Top 5 de mediciones más altas.
-    (Versión Timescale Blob)
+    Retorna el Top 5 de mediciones más altas (Timescale).
+    Desempaqueta bloques para encontrar picos múltiples dentro del mismo intervalo.
     """
     measureParam = request.GET.get('measure', None)
-    
-    try:
-        start_ts = int(float(request.GET.get('from', 0)) * 1000) 
-    except (ValueError, TypeError):
-        start_ts = 0
+    response_data = {}
 
     try:
+        # Conversión de timestamps (milisegundos -> microsegundos para Timescale)
+        start_ts = int(float(request.GET.get('from', 0)) * 1000) 
+        
         if request.GET.get('to'):
              end_ts = int(float(request.GET.get('to')) * 1000)
         else:
              end_ts = int(datetime.now().timestamp() * 1000000)
-    except (ValueError, TypeError):
-         end_ts = int(datetime.now().timestamp() * 1000000)
 
-    response_data = {}
+        if measureParam:
+            # 1. Traer los mejores N bloques.
+            # Traemos más de 5 (ej: 10) para asegurar que si los 5 picos más altos
+            # están distribuidos en varios bloques, los tengamos todos.
+            candidate_blocks = Data.objects.filter(
+                measurement__name=measureParam,
+                time__gte=start_ts, 
+                time__lte=end_ts
+            ).order_by('-max_value')[:10] 
 
-    if measureParam:
-        # 1. Traer los 5 BLOQUES con los max_value más altos
-        top_blocks = Data.objects.filter(
-            measurement__name=measureParam,
-            time__gte=start_ts, 
-            time__lte=end_ts
-        ).order_by('-max_value')[:5]
+            all_measurements = []
 
-        data_list = []
-        
-        for block in top_blocks:
-            # 2. Encontrar el valor máximo real DENTRO de cada bloque
-            values = block.values
-            if not values:
-                continue
+            # 2. Desempaquetar TODOS los valores de los bloques candidatos
+            for block in candidate_blocks:
+                values = block.values # Lista de floats
+                times = block.times   # Lista de offsets
                 
-            local_max = max(values)
-            max_index = values.index(local_max)
+                # Reconstruir cada medición individual
+                for i in range(len(values)):
+                    val = values[i]
+                    offset = times[i]
+                    
+                    # Filtro de seguridad: a veces un bloque puede tener valores fuera del rango exacto solicitado
+                    # si el bloque cruza el límite del filtro, aunque 'time__gte' lo maneja bien a nivel de bloque.
+                    
+                    exact_time_ts = block.base_time.timestamp() + offset
+                    # Opcional: Verificar si exact_time_ts cae en el rango solicitado si se requiere precisión estricta
+                    
+                    all_measurements.append({
+                        'station_id': block.station.id,
+                        'city': block.station.location.city.name,
+                        'measurement': block.measurement.name,
+                        'value': val,
+                        'timestamp': datetime.fromtimestamp(exact_time_ts).isoformat()
+                    })
+
+            # 3. Ordenar la lista completa de mediciones individuales en memoria
+            # Ordenamos por valor descendente
+            all_measurements.sort(key=lambda x: x['value'], reverse=True)
+
+            # 4. Tomar los 5 primeros
+            top_5 = all_measurements[:5]
             
-            # 3. Calcular fecha exacta
-            offset_seconds = block.times[max_index]
-            exact_time = block.base_time.timestamp() + offset_seconds
-            exact_time_iso = datetime.fromtimestamp(exact_time).isoformat()
+            response_data = {'ranking': top_5}
+        else:
+            response_data = {'error': 'Falta el parámetro "measure"'}
 
-            data_list.append({
-                'station': {
-                    'id': block.station.id,
-                    'city': block.station.location.city.name,
-                    'state': block.station.location.state.name,
-                    'country': block.station.location.country.name
-                },
-                'measurement': block.measurement.name,
-                'max_value': local_max,
-                'timestamp': exact_time_iso
-            })
-
-        # 4. Ordenar la lista final (por si el orden de bloques varió ligeramente por decimales)
-        data_list.sort(key=lambda x: x['max_value'], reverse=True)
-        
-        response_data = {'ranking': data_list}
-    else:
-        response_data = {'error': 'Measurement parameter "measure" is required'}
+    except Exception as e:
+        response_data = {'error': str(e)}
 
     return JsonResponse(response_data)
